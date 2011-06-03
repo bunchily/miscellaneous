@@ -1,0 +1,266 @@
+#!/usr/bin/ksh
+#===============================================================================
+#@(#) Unix Shell Script:	metastat_error_alert
+#
+#@(#) Purpose:	Mails root if errors occur in metastat detail - run on a 
+#@(#)		cron basis
+# 
+#@(#) Usage:	metastat_error_alert [ -a <address> ]
+#
+#
+# Notes:
+#
+#
+#@(#) External Functions :	xfn_lg_Message, xfn_lg_Transaction_Break
+#@(#)				xfn_utl_mail
+#
+#@(#) Author:	Cary Corse	21-01-01
+#
+# Checked By:	Name		DD-MM-YY
+#
+#@(#) Version:	1.7
+#===============================================================================
+#
+# History of Changes:
+#
+# 1.1	CAC	02-08-01	CHG REF
+#	Added path to metastat into routine
+# 1.2	CAC	14-01-02	CHG REF
+#	Modified to report WARNINGs if resync message occurs within the 
+#	output. Output modified to Potential Problem if so.
+#	Also modified to include $0 and $VERS in the mail output.
+# 1.3	CAC	25-07-03	CHG REF
+#	Added fn_two_mirror_check to check metastat output for the presence of
+#	Mirrors that have less than 2 sub mirrors and report on them using 
+#	existing mail and logging routines.
+# 1.4	CAC	22-09-03
+#	Loop added to clear up temporary files. MAIL_FILE was not being
+#	cleared up.
+# 1.5	CAC	20-10-03
+#	Wasn't picking up Resyncing messages.  Added Variable $ERRORS to cope
+#	with required conditional statments.
+# 1.6	CAC	24-11-03
+#	Now only writes to log LOG_FILE if an error is found. Generally tidied
+#	up.
+# 1.7	CAC	21-01-05
+#	changed LOG_FILE from /opt/spool/log/alarm to /opt/spool/log/alert/unix
+#-------------------------------------------------------------------------------
+
+#===============================================================================
+#	Declare Variables
+#-------------------------------------------------------------------------------
+VERS="1.6"						## version number
+PID=$$							## process id
+MAIL_ADDRESS="root"					## default mail to root
+ERRORS=0						## if 0 no errors found
+FPATH=$FPATH:/opt/local/functions/utils:/opt/local/functions/log ; export FPATH
+LOG_FILE="/opt/spool/log/alert/unix/metastat_error.log"	## Log file
+TMP_FILE="/tmp/metastat_alert.$PID"			## temp file
+MAIL_FILE="/tmp/metastat_mail.$PID"			## mail file
+PATH=$PATH:/usr/opt/SUNWmd/sbin ; export PATH
+WARNING_REQ="N"						## warning message req
+WARNING_FILE="/tmp/WARNING_REQ.txt"
+
+
+#===============================================================================
+#	Functions Start Here
+#-------------------------------------------------------------------------------
+#===============================================================================
+#	Function to	Translate lines from metastat States without Okay
+#	Usage:	fn_trans_lines
+#-------------------------------------------------------------------------------
+
+fn_trans_lines () {
+
+while read LINE_NUM
+do
+   # Get the error detail
+   STATE_DETAIL=`sed -n ${LINE_NUM}p $TMP_FILE | awk -F':' '{print $2}'`
+
+   # Now get previous line (name of mirror or submirror
+   let MIRROR_LINE=$LINE_NUM-1
+   MIRROR_DET=`sed -n ${MIRROR_LINE}p $TMP_FILE`
+
+   # Now get line before that (might be a sub
+   # mirror within a mirror so report that)
+				#
+	 let MIRROR_LINE2=$LINE_NUM-2
+	 MIRROR_LINE2=`sed -n ${MIRROR_LINE2}p $TMP_FILE`
+
+				# Now check last line and write relevant info
+				# to mail file and log file
+
+	 if echo $MIRROR_LINE2 | egrep ": Mirror" >/dev/null 2>&1
+	 then
+	    if echo "$STATE_DETAIL" | egrep "Resyncing" >/dev/null 2>&1
+	    then
+	       echo "$MIRROR_LINE2 \n$MIRROR_DET - Warning reporting : $STATE_DETAIL" >>$MAIL_FILE
+	       xfn_lg_Message -y $LOG_FILE "$MIRROR_LINE2\n$MIRROR_DET - Warning reporting : $STATE_DETAIL" >/dev/null 2>&1
+	       WARNING_REQ="Y"
+      else
+	       echo "$MIRROR_LINE2 \n$MIRROR_DET - Error $STATE_DETAIL" >>$MAIL_FILE
+	       xfn_lg_Message -y $LOG_FILE "$MIRROR_LINE2\n$MIRROR_DET - Error $STATE_DETAIL" >/dev/null 2>&1
+	       WARNING_REQ="N"
+      fi
+   else
+	    if echo "$STATE_DETAIL" | egrep "Resyncing" >/dev/null 2>&1
+	    then
+	       echo "$MIRROR_DET - Warning reporting : $STATE_DETAIL" >>$MAIL_FILE
+	       xfn_lg_Message -y $LOG_FILE "$MIRROR_DET - Warning reporting $STATE_DETAIL" >/dev/null 2>&1
+	       WARNING_REQ="Y"
+      else
+	       echo "$MIRROR_DET - Error $STATE_DETAIL" >>$MAIL_FILE
+	       xfn_lg_Message -y $LOG_FILE "$MIRROR_DET - Error $STATE_DETAIL" >/dev/null 2>&1
+	       WARNING_REQ="N"
+      fi
+   fi
+
+done
+
+}
+
+
+#===============================================================================
+#	Function to	Display usage
+#	Usage:	fn_usage
+#-------------------------------------------------------------------------------
+
+fn_usage ()
+{
+
+echo "Usage : metastat_error_alert [ -a <address> ] "
+echo ""
+
+}
+
+#===============================================================================
+#	Function to check for two or more mirrors
+#	Usage: fn_two_mirror_check	
+#-------------------------------------------------------------------------------
+
+#===============================================================================
+#	Declare Variables
+#-------------------------------------------------------------------------------
+#WARNING_REQ		imported awk variable. Will contain a Y or N
+#MAIL_FILE		imported awk variable. Will contain tempfile path & name
+#WARNING_FILE		imported awk variable. Will contain warningfile path/nam
+#MIRROR			awk variable. Contains current mirror name
+#MIRROR_COUNT		awk variable. Contains count of submirrors per mirror
+#
+fn_two_mirror_check ()
+{
+   >$MAIL_FILE				# create a mail file
+   echo "$0 version : $VERS\n" >>$MAIL_FILE
+					# begin awk statment
+nawk \
+-v WARNING_REQ=${WARNING_REQ} \
+-v MAIL_FILE=${MAIL_FILE} \
+-v WARNING_FILE=${WARNING_FILE} \
+' \
+{
+   if ( $2 == "Mirror" ) 		# Does 2nd field contain "Mirror"?
+   { 					# example: "d10 Mirror"
+      MIRROR=substr($1,1,3)		# assign mirror name to variable 
+      MIRROR_COUNT = 0			# example "d10"
+      getline
+      while ( $1 == "Submirror" || $1 == "State:" )
+      {					# while 1st field = Submirror or State
+         if ( $1 == "Submirror" )	
+            {				# if 1st field = Submirror
+            MIRROR_COUNT++		# increment MIRROR_COUNT
+            }
+         getline			# get new line of data
+      } 
+         if ( MIRROR_COUNT < 2 )	# if MIRROR_COUNT>2 print error mssg
+         {
+            printf ("Mirror %3s has less than two Submirrors\n", MIRROR) >> MAIL_FILE
+            MIRROR_COUNT = 0		# reset MIRROR_COUNT after print 
+            WARNING_REQ = "Y"
+               if ( WARNING_COUNT < 1 && WARNING_REQ == "Y" ) 
+               {			# print Y only the first time round
+                  printf "Y" > WARNING_FILE
+                  WARNING_COUNT=99
+                  #print WARNING_COUNT
+               }
+            #break			    
+         }
+   }   
+}' ${TMP_FILE}
+
+WARNING_REQ=`cat ${WARNING_FILE} 2>&1`
+
+}
+
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#	Main Processing Starts Here
+#-------------------------------------------------------------------------------
+
+while getopts a: opt
+do
+   case $opt in
+   "a")	MAIL_ADDRESS=$OPTARG
+	;;
+   *)   fn_usage
+	exit
+	;;
+   esac
+done
+
+# Get the disk status from metastat
+metastat >$TMP_FILE
+
+fn_two_mirror_check
+
+# Check for State : lines that haven't got ok in them
+ERRORS=`egrep "State: " $TMP_FILE | egrep -v "Okay" | wc -l` >/dev/null
+
+if [[ $ERRORS -ne 0 ]]
+then
+   DETERMINE=Y
+else
+   DETERMINE=N
+fi 
+
+if [[ ${WARNING_REQ} = "Y" || $DETERMINE = "Y" ]]
+then
+   #>$MAIL_FILE			# create a mail file
+   #echo "$0 version : $VERS\n" >>$MAIL_FILE
+
+   # now get the line numbers of the state detail
+   # and pass to fn_trans_lines
+   egrep -n "State: " $TMP_FILE | egrep -v "Okay" | awk -F':' '{print $1}' | \
+       fn_trans_lines
+
+   # mail out ...
+   if [[ $DETERMINE = "Y" ]]
+   then
+     xfn_utl_mail \
+       -s "ERROR : `uname -n` Problem with Disksuite Metastat errors" \
+       -t "`cat $MAIL_FILE`" -a $MAIL_ADDRESS >/dev/null 2>&1
+   elif [[ $WARNING_REQ = "Y" ]]     # if warnings only report warning message
+   then
+     xfn_utl_mail \
+       -s "WARNING : `uname -n` Potential Problem with Disksuite Metastat" \
+       -t "`cat $MAIL_FILE`" -a $MAIL_ADDRESS >/dev/null 2>&1
+   fi
+
+
+   # transaction break in log file
+   xfn_lg_Transaction_Break $LOG_FILE >/dev/null 2>&1
+
+   rm -f $MAIL_FILE
+
+###else				# all ok so no need to report
+
+   ###xfn_lg_Message -y $LOG_FILE "No Errors to report in Metastat" >/dev/null 2>&1
+   ###xfn_lg_Transaction_Break $LOG_FILE >/dev/null 2>&1
+
+fi
+
+# Clear up temporary files
+for FILE in $TMP_FILE $WARNING_FILE $MAIL_FILE
+do
+   if [ -f $FILE ]; then
+      rm $FILE
+   fi
+done

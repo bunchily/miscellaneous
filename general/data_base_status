@@ -1,0 +1,239 @@
+#!/usr/bin/ksh
+#===============================================================================
+#@(#) Unix Shell Script:        data_base_status
+#
+#
+#@(#) Purpose:  To query and database and check for the database status
+#@(#)           and emails utsg if status is anything other than open
+#
+#@(#) Usage: data_base_status (-d|-t) <database/tns name>
+#
+# Where:        -d      sets script for use with database names
+#               -t      sets script for use with TNS names
+#               <database/tns name> is the database who's status needs checked
+#
+# Notes: 1. Options are processed and variables set
+#        2. Temporary sql is build in /tmp
+#        3. The oracle environment using xfn_ora_Set_DB_Env
+#        4. xfn_ora_Execute_SQL_Script command line is build and executed
+#        5. Database status is extracted from xfn_ora_Execute_SQL_Script output
+#        6. If status is other that "OPEN" email addresses in $ADDRESS are maile
+#           with an error.
+#
+#
+#@(#) External Functions : xfn_ora_Set_Env, xfn_ora_Execute_SQL_Script, 
+#     xfn_utl_mail xfn_ora_Get_Password
+#
+#@(#) Author:	Cary Corse	05-11-04
+#
+# Checked By:	Name		DD-MM-YY
+#
+#@(#) Version:	1.0
+#===============================================================================
+#
+# History of Changes:
+#
+# 1.1	CAC	14-01-05	CHG REF
+#	Now echos that the database is OPEN if it is. ADDRESS was cary now utsg.
+#	Now removes TMP_SQL & emails on environment and password setting errors
+#	using fn_Error.
+# 1.2	CAC	20-01-05
+#	For use in standby_db_upadate:
+#	Now returns non zero if database is not open.  fn_Finish function
+#	added. Now adds error messages from xfn_ora_Set_DB_Env and
+#	xfn_ora_Get_Password to mail text.  Program bname no longer displayed
+#	in the mail subject.
+# 1.3	CAC	21-01-05
+#	exit 1 added to fn_Usage. Errors now output on standard error.
+#	Now calls fn_usage if -t or id are not specified.
+# 1.4	CAC	25-01-05
+#	2>&1 added to call to xfn_ora_Execute_SQL_Script to prevent mail
+#	being created through cron output.
+# 1.5	CAC	02-02-05
+#	Changed if [[ $STATUS == OPEN ]] else from echo to an xfn_lg_Message 
+#	call using new variable $LOG. And updated Functions Used: section to 
+#	show use of old ora Password and Set env functions.
+# 1.6	CAC	04-04-05
+#	Added /opt/local/functions/log to FPATH and changed LOG variable.
+#	from /opt/spool/log/alert/$basename ${0}.log to 
+#	/opt/spool/log/alert/oracle/$(basename ${0}).log
+# 1.7	CAC	20-06-06
+#	Routine modified so we get the error raised by running the SQL query.
+#	We now re-run the query if an error is raised.
+#	fn_Error modified so that error os output on standard out rather than
+#	std error to prevent additional e-mail (was echo "$TEXT" 1>&2).
+# 1.8	CAC	06-06-07
+#	To prevent additional e-mail to oracle when run as cron:
+#	No longer writes "Database ${DBASE} is NOT OPEN" to standard error.
+#	Rather tan run quey twice (database may be back up) writes output
+#	to temp file and lists that on error.
+# 1.9	CAC	11-07-06
+#	To try and identify underlying problem we now "ping" the server
+#	for -t option.
+#	
+#-------------------------------------------------------------------------------
+
+#===============================================================================
+#	Declare Variables
+#-------------------------------------------------------------------------------
+
+ADDRESS=utsg
+FPATH=$FPATH:/opt/local/functions/log:/opt/local/functions/utils:/opt/local/functions/oracle
+OUTPUT=""
+LOG=/opt/spool/log/alert/oracle/$(basename ${0}).log
+###TMP_SQL="/tmp/temp$$.sql"
+TMP_SQL="/tmp/data_base_status$$.sql"
+TMP_OUT=/tmp/data_base_status$$.out
+USER=system
+
+
+#===============================================================================
+#	Functions Start Here
+#-------------------------------------------------------------------------------
+#
+#===============================================================================
+#	Function to build temporary SQL	
+#	Usage: fn_Build_SQL
+#-------------------------------------------------------------------------------
+fn_Build_SQL ()
+{
+
+cat > $TMP_SQL <<- EOF
+	select 'STATUS:' || status from v\$instance;
+EOF
+
+}
+
+
+#===============================================================================
+#	Function to Display Usage message	
+#	Usage: fn_Usage
+#-------------------------------------------------------------------------------
+fn_Usage ()
+{
+
+USAGE="Usage: $0 (-d|-t) <database/tns name>"
+
+echo $USAGE 1>&2
+exit 2
+
+}
+
+
+#===============================================================================
+#	Function to Mail utsg on error
+#	Usage: fn_Error
+#-------------------------------------------------------------------------------
+fn_Error ()
+{
+
+TEXT="$1"
+
+###echo "$TEXT" 1>&2
+echo "$TEXT"
+
+xfn_utl_mail  -s"ERROR: Database ${DBASE} status is not 'OPEN'" \
+   -a${ADDRESS} -t"ERROR: Please investigate potential problem connecting to database ${DBASE}\n$TEXT"
+
+}
+
+
+#===============================================================================
+#	Function to clean up temp file
+#	Usage: fn_Finish
+#-------------------------------------------------------------------------------
+fn_Finish ()
+{
+
+# Remove temporary SQL
+rm $TMP_SQL $TEMP_LOG
+
+}
+
+
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#	Main Processing Starts Here
+#-------------------------------------------------------------------------------
+while getopts t:d: OPT
+do
+   case ${OPT} in
+      t) SWITCH='-t' 
+	 DATABASE=$OPTARG
+	 SERVER=`echo $DATABASE | cut -d. -f2`
+	 ;; 
+      d) SWITCH=""   
+	 DATABASE=$OPTARG
+	 ;;
+      *) fn_Usage
+   esac
+done
+
+# Set DBASE, DATABASE is unset for tns call to xfn_ora_Execute_SQL_Script
+DBASE=$DATABASE
+
+if ! [ $DBASE ]; then
+   fn_Usage
+fi
+
+# For TNSNMAMES -t option
+if [ $SERVER ]; then
+   if ! /usr/sbin/ping $SERVER 2>&1 > /dev/null; then
+      fn_Error "Cannot ping $SERVER, server down or network problem?"
+   fi
+fi
+
+fn_Build_SQL
+
+# Set oracle environment using old routines.  New routine will not check remote 
+# passwords
+if OUTPUT=`xfn_ora_Set_Env ${DBASE} 2>&1`
+then
+   echo $OUTPUT | read ORACLE_SID ORACLE_HOME PATH
+   export ORACLE_SID ORACLE_HOME PATH 
+else
+   fn_Error "$OUTPUT"
+   exit 1
+fi
+
+if ! PASSWORD=`xfn_ora_Get_Password ${USER} 2>&1`; then
+   fn_Error "$PASSWORD"
+   exit 1
+fi
+
+# null DATABASE variable if not using TNS Names
+[[ -z ${SWITCH} ]] && DATABASE=""
+
+#### Contact Database and set variable to query output line begining with STATUS
+###OUTPUT=$(xfn_ora_Execute_SQL_Script ${SWITCH} ${DATABASE} ${USER} ${PASSWORD} ${TMP_SQL} 2>&1 | egrep  ^STATUS)
+
+# Run sql to query status of db and write to temp file
+xfn_ora_Execute_SQL_Script ${SWITCH} ${DATABASE} ${USER} ${PASSWORD} ${TMP_SQL} 2>&1 >$TMP_OUT
+
+# Get status of database 
+###STATUS=$(echo ${OUTPUT} | egrep ^STATUS | awk -F: '{print $2}')
+STATUS=`nawk -F: '/^STATUS/ {print $2}' $TMP_OUT`
+
+# Check contents of STATUS an email an error message if not OPEN
+if [[ ${STATUS} = OPEN ]]
+then
+
+   echo "Database ${DBASE} is OPEN"
+
+else
+
+   #### Get error
+   ###OUTPUT=$(xfn_ora_Execute_SQL_Script ${SWITCH} ${DATABASE} ${USER} ${PASSWORD} ${TMP_SQL} 2>&1)
+
+   ###xfn_lg_Message ${LOG} "Database ${DBASE} is NOT OPEN" 1>&2
+   xfn_lg_Message ${LOG} "Database ${DBASE} is NOT OPEN"
+
+   ###fn_Error "$OUTPUT"
+   fn_Error "`cat $TMP_OUT`"
+
+   # Clean up temp file
+   fn_Finish
+   exit 2
+
+fi
+
+fn_Finish
