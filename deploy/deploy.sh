@@ -1,3 +1,5 @@
+#THIS IS A PSEUDO CODE THINKING EXERCISE
+
 #webserver deploy
 #run as deploy user
 
