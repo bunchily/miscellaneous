@@ -46,4 +46,9 @@ do
    sleep 5
 done
 
-exit 0
+if [ "$value" = "1" ]
+then
+   exit 0
+else
+   exit 1
+fi
