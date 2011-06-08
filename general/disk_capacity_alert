@@ -1,0 +1,168 @@
+#!/usr/bin/ksh
+#@(#) Unix Shell Script:        disk_capacity_alert 
+#
+#@(#) Purpose:  The purpose of this script is to perform regular disk capacity
+#@(#) checks and report, by email and log file, when filesystems exceed either
+#@(#) a default value or and exception value from a control file.  
+#
+#@(#) Usage:    disk_capacity_alert [-s ##] [-f file]
+# 		where:
+#		-s	Specifies a default disk capacity percentage.
+#			default is 90
+#		-f	Specifies path and name of the exception file.
+#			default is /var/opt/alert/disk_capacity_alert.ctl
+#
+# Notes:
+#
+#
+#@(#) External Functions :      xfn_lg_Message, xfn_lg_Transaction_Break
+#@(#)                           xfn_utl_mail
+#
+#@(#) Author:   Cary Corse      18-08-03
+#
+# Checked By:   Name            DD-MM-YY
+#
+#@(#) Version:  1.0
+#===============================================================================
+#
+# History of Changes:
+#
+# 1.1   CAC	29-08-03	CHG REF
+#	Inserted $PATH variable to call correct version of awk.
+# 1.2   CAC     10-09-03
+#	Changed xfn_utl_mail addressee to utsg
+# 1.3   CAC	12-09-03
+#	Corrected comment format and function naming i.a.w. CIS standards 
+# 1.4	NBS	27-10-03
+#	This change recorded.
+#	CAC modification df -k is used for Solaris 2.6 and 2.8 df -h is
+#	used for other releases of Solaris.
+# 1.5	CAC	27-05-04
+#	Routine wansn't cleaning up $MAIL_FILE so a call to existing fn_Cleanup
+#	function was added.
+# 1.6	CAC	27-01-05
+#	changed contents of LOG_FILE variable from /opt/spool/log/alarm/$PRG.log
+#	to /opt/spool/log/alert/unix/${PRG}.log iaw new log storage convention.
+# 1.7	CAC	04-03-05
+#	Changed syntax turbulence caused by confusion on awk, sh, and ksh syntax
+#	in the if and elif statments which determin existance of and excption
+#	capacity.  Previous syntax what handling numbers as strings.
+# 1.8	CAC	17-05-05
+#	Added exception to prevent reporting on cdrom drives when a cd is loaded
+# 1.9 	CAC	30-06-05
+#	Implemented 1.8 and changed email addy.
+#-------------------------------------------------------------------------------
+#===============================================================================
+#       Declare Variables
+#-------------------------------------------------------------------------------
+DEFAULT_SIZE=90
+EXCEPT_FILE=/var/opt/alert/disk_capacity_alert.ctl
+PRG=`basename $0`
+MAIL_FILE=/tmp/${PRG}.$$.tmp
+LOG_FILE=/opt/spool/log/alert/unix/${PRG}.log
+PATH=/usr/xpg4/bin:$PATH ; export PATH
+FPATH=$FPATH:/opt/local/functions/log:/opt/local/functions/utils ; export FPATH
+WARNING_REQ=N
+typeset -i CAPACITY
+#===============================================================================
+#       Function to     Display usage
+#       Usage:  fn_Usage
+#-------------------------------------------------------------------------------
+
+function fn_Usage
+{
+  print "Usage: ${PRG} [-s ##] [-f file]"
+  print '     where [-s ##]   is a two digit default value. (90 default)'
+  print '	    [-f file] is the path and name of the exception file'
+  print ""
+}
+
+#===============================================================================
+#       Function to    Clean up Temporary file 
+#       Usage:  fn_Cleanup
+#-------------------------------------------------------------------------------
+
+function fn_Cleanup
+{
+  if [[ -a ${MAIL_FILE} ]]
+  then
+     rm ${MAIL_FILE}
+  fi
+  exit
+}
+
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#       Main Processing Starts Here
+#-------------------------------------------------------------------------------
+trap fn_Cleanup 1 2 3 4 5 6 7 8 9 
+
+while getopts ":s:f:" opt
+do
+   case ${opt} in
+      s )   DEFAULT_SIZE=${OPTARG} ;;
+      f )   EXCEPT_FILE=${OPTARG} ;;
+      \?)   fn_Usage ;;
+      * )   fn_Usage ;;
+   esac
+done
+
+# if running at solaris 5.9 set df flag to k
+if [[ `uname -r` == +(5.8|5.6) ]]
+then
+   FLAG=k
+   TAG=kb
+else
+   FLAG=h
+   TAG=b
+fi
+  
+# extract filesystem name and capacity from each line from df -h 
+df -${FLAG} | awk '/^\// {print $6, $5, $4}' \
+| while read FILESYSTEM CAPACITY_STRING MB_AVAILABLE
+do
+     
+   # echo $FILESYSTEM and remove % from string
+   CAPACITY=`echo ${CAPACITY_STRING} | sed 's/%//'`
+   
+   # v1.8
+   # if $FILESYSTEM is a cdrom then skip this entry
+   if echo $FILESYSTEM | grep "/cdrom/*"
+   then
+     continue
+   fi
+
+   # 
+   # cat $EXCEPT_FILE and get lines that contain $FILESYSTEM and print 2nd field
+   # and assign value to $EXCEPT_CAPACITY
+   EXCEPT_CAPACITY=`cat ${EXCEPT_FILE} | awk -v FILESYSTEM=${FILESYSTEM} '$1 == FILESYSTEM {print $2}'`
+
+  
+# test $EXCEPT_CAPACITY to determine if values from $EXCEPT_FILE have been
+# exceeded. If true, print warning to $MAIL_FILE
+if [[ ${EXCEPT_CAPACITY} -gt 0 && ${CAPACITY} -ge ${EXCEPT_CAPACITY} ]]    
+   then
+      printf '%-15s size is %2.0d%%: \t Larger than specified threshold of %2.0d%%: %s%s available.  \n' "${FILESYSTEM}" "${CAPACITY}" "${EXCEPT_CAPACITY}" "$MB_AVAILABLE" "$TAG" >> ${MAIL_FILE}
+      WARNING_REQ=Y
+     
+   # test CAPACITY variables to determine if default values have been
+   # exceeded. If true, print warning to $MAIL_FILE
+   elif [[ $CAPACITY -gt ${DEFAULT_SIZE} && ${EXCEPT_CAPACITY} -lt ${CAPACITY} ]]
+   then
+      printf '%-15s size is %2.0d%%: \t Larger than default size of %2.0d%%: %s%s available. \n' "${FILESYSTEM}" "${CAPACITY}" "${DEFAULT_SIZE}" "$MB_AVAILABLE" "$TAG" >> ${MAIL_FILE}
+      WARNING_REQ=Y
+   fi
+done
+
+  
+# If $WARNING_REQ is set to Y then mail $MAIL_FILE and append $MAIL_FILE to 
+# $LOG_FILE
+if [[ ${WARNING_REQ} == Y ]]
+then
+   xfn_utl_mail -s "WARNING : from ${PRG} on `hostname`" \
+                -t "`cat ${MAIL_FILE}`" -a utsg
+   xfn_lg_Message -y ${LOG_FILE} "WARNING : from ${PRG} on `hostname`" > /dev/null
+   cat ${MAIL_FILE} >> ${LOG_FILE}
+   xfn_lg_Transaction_Break ${LOG_FILE}
+fi
+
+fn_Cleanup
