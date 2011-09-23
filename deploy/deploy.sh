@@ -57,3 +57,4 @@ make sphinx-all
   
 
 THIS IS A STUPID IDEA CARY....think again
+Yep, still a bad idea
